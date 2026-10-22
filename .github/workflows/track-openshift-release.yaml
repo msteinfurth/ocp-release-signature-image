@@ -1,0 +1,62 @@
+# Polls the OpenShift mirror for the newest release on CHANNEL. When it is not
+# yet tagged in this repository, bumps the OCP_VERSION default in the
+# Containerfile, commits, and pushes a git tag named after the version.
+# The Quay.io build trigger builds that tag and tags the image with it.
+name: Track OpenShift release
+
+on:
+  schedule:
+    - cron: "17 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: track-openshift-release
+
+env:
+  # Mirror channel directory: stable, stable-4.22, fast-4.22, latest, ...
+  CHANNEL: stable
+  ARCH: x86_64
+  MIRROR: https://mirror.openshift.com/pub/openshift-v4
+
+jobs:
+  track:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve newest release on channel
+        id: resolve
+        run: |
+          set -euo pipefail
+          curl -fsSL -o release.txt "${MIRROR}/${ARCH}/clients/ocp/${CHANNEL}/release.txt"
+          version="$(awk '/^Name:/ { print $2; exit }' release.txt)"
+          rm release.txt
+          if ! [[ "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "unexpected version '${version}' on channel ${CHANNEL}" >&2
+            exit 1
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          if git ls-remote --exit-code --tags origin "refs/tags/${version}" >/dev/null; then
+            echo "${version} is already tagged"
+            echo "new=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "new release ${version}"
+            echo "new=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Bump Containerfile, commit and tag
+        if: steps.resolve.outputs.new == 'true'
+        env:
+          VERSION: ${{ steps.resolve.outputs.version }}
+        run: |
+          set -euo pipefail
+          sed -i -E "s/^ARG OCP_VERSION=.*/ARG OCP_VERSION=${VERSION}/" Containerfile
+          sed -i -E "s/signature-server:[0-9]+\.[0-9]+\.[0-9]+/signature-server:${VERSION}/" Containerfile
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "OpenShift ${VERSION}"
+          git tag "${VERSION}"
+          git push --atomic origin "HEAD:${GITHUB_REF_NAME}" "refs/tags/${VERSION}"

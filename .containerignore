@@ -1,0 +1,3 @@
+# Quay.io requires the Containerfile to be part of the build context.
+*
+!Containerfile
