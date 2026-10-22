@@ -7,7 +7,7 @@
 #
 # Local build (override with any x.y.z, or a mirror channel such as stable,
 # stable-4.22, fast-4.22 or latest):
-#   podman build -t signature-server:4.22.17 -f Containerfile .
+#   podman build -t signature-server:4.22.18 -f Containerfile .
 #   podman build --build-arg OCP_VERSION=stable -t signature-server:stable -f Containerfile .
 #
 # URL: http://<host>:8080/sha256%3D<digest>/signature-1
@@ -16,7 +16,7 @@
 # so the "%3D" in the URL must be a literal "=" in the on-disk directory name.
 # Requests using either "%3D" or "=" resolve to the same file.
 
-ARG OCP_VERSION=4.22.17
+ARG OCP_VERSION=4.22.18
 
 FROM registry.access.redhat.com/ubi9/ubi-minimal:latest AS fetch
 
