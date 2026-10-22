@@ -1,13 +1,21 @@
 # Polls the OpenShift mirror for the newest release on CHANNEL. When it is not
 # yet tagged in this repository, bumps the OCP_VERSION default in the
-# Containerfile, commits, and pushes a git tag named after the version.
-# The Quay.io build trigger builds that tag and tags the image with it.
+# Containerfile, commits, pushes a git tag named after the version, and calls
+# the webhook of a Quay.io "Custom Git Repository Push" build trigger, which
+# builds that tag and tags the image with it.
+#
+# Requires the repository secret QUAY_WEBHOOK_URL (trigger webhook endpoint).
 name: Track OpenShift release
 
 on:
   schedule:
     - cron: "17 */6 * * *"
   workflow_dispatch:
+    inputs:
+      rebuild_tag:
+        description: "Existing version tag to rebuild on Quay.io instead of checking for a new release"
+        required: false
+        default: ""
 
 permissions:
   contents: write
@@ -29,6 +37,7 @@ jobs:
 
       - name: Resolve newest release on channel
         id: resolve
+        if: inputs.rebuild_tag == ''
         run: |
           set -euo pipefail
           curl -fsSL -o release.txt "${MIRROR}/${ARCH}/clients/ocp/${CHANNEL}/release.txt"
@@ -60,3 +69,23 @@ jobs:
           git commit -am "OpenShift ${VERSION}"
           git tag "${VERSION}"
           git push --atomic origin "HEAD:${GITHUB_REF_NAME}" "refs/tags/${VERSION}"
+
+      - name: Trigger Quay.io build
+        if: steps.resolve.outputs.new == 'true' || inputs.rebuild_tag != ''
+        env:
+          QUAY_WEBHOOK_URL: ${{ secrets.QUAY_WEBHOOK_URL }}
+          TAG: ${{ inputs.rebuild_tag || steps.resolve.outputs.version }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          if [ -z "${QUAY_WEBHOOK_URL}" ]; then
+            echo "repository secret QUAY_WEBHOOK_URL is not set" >&2
+            exit 1
+          fi
+          # Peeled "^{}" entry is the commit for annotated tags; lightweight tags have only one entry.
+          commit="$(git ls-remote --exit-code origin "refs/tags/${TAG}" "refs/tags/${TAG}^{}" |
+            awk '{ c[$2] = $1 } END { print (("refs/tags/" t "^{}") in c) ? c["refs/tags/" t "^{}"] : c["refs/tags/" t] }' t="${TAG}")"
+          jq -n --arg commit "${commit}" --arg ref "refs/tags/${TAG}" --arg branch "${DEFAULT_BRANCH}" \
+            '{commit: $commit, ref: $ref, default_branch: $branch}' |
+            curl -fsS -X POST -H "Content-Type: application/json" --data-binary @- "${QUAY_WEBHOOK_URL}"
+          echo "Quay.io build requested for ${TAG} (${commit})"

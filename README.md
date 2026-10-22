@@ -69,34 +69,48 @@ flowchart LR
   A[GitHub Actions cron, every 6 h] -->|CHANNEL/release.txt| B{git tag for version exists?}
   B -->|yes| Z[stop]
   B -->|no| C[bump ARG OCP_VERSION, commit, push tag]
-  C -->|webhook| D[Quay.io build trigger]
+  C -->|POST QUAY_WEBHOOK_URL| D[Quay.io custom git trigger]
   D --> E[image tagged with version]
 ```
 
 [`.github/workflows/track-openshift-release.yaml`](.github/workflows/track-openshift-release.yaml)
 checks the newest release on `CHANNEL` (default `stable`). If that version has
 no git tag yet, the workflow sets `ARG OCP_VERSION` in the `Containerfile`,
-commits, and pushes a git tag with the version as its name. A Quay.io build
-trigger on that tag builds the image and tags it with the same version.
+commits, and pushes a git tag with the version as its name. It then POSTs that
+tag to the webhook of a Quay.io *Custom Git Repository Push* trigger. Quay.io
+clones the tag over HTTPS, builds it, and tags the image with the same version.
 
 Quay.io build triggers cannot run on a schedule or pass build args. That's why
 the version check runs in GitHub Actions and the version lives in the
-`Containerfile`.
+`Containerfile`. The regular *GitHub* trigger type doesn't work here: GitHub
+rejects the deploy key it generates ("key is too short"). The custom git
+trigger needs no key because the repository is public.
 
 ### Setup
 
-1. **GitHub:** under *Settings → Actions → General → Workflow permissions*,
-   allow *Read and write permissions*. Branch protection on the default branch
-   must allow the workflow to push.
-2. **Quay.io:** in the image repository, open *Builds → Create Build Trigger →
-   GitHub* and select this repository:
+1. **Quay.io:** in the image repository, open *Builds → Create Build Trigger →
+   Custom Git Repository Push*:
+   - Repository URL: `https://github.com/msteinfurth/ocp-release-signature-image.git`
+     (HTTPS, so no SSH key is needed).
    - Dockerfile path `/Containerfile`, context `/`.
-   - Restrict the trigger to tag refs, so the version-bump commit on the
-     branch doesn't build an image too.
    - Tagging: *Tag manifest with the branch or tag name*. Optionally add a
      `latest` tag template.
-3. Run the workflow once by hand (*Actions → Track OpenShift release → Run
-   workflow*). Check that a tag is pushed and that Quay starts a build.
+   - Skip the SSH public key Quay.io shows afterwards.
+2. **GitHub:** copy the trigger's webhook endpoint URL (*gear → View
+   Credentials*) into the repository secret `QUAY_WEBHOOK_URL`:
+   ```sh
+   gh secret set QUAY_WEBHOOK_URL
+   ```
+   The workflow declares `contents: write` itself, so the repository's default
+   read-only workflow permission is fine. Branch protection on the default
+   branch must allow the workflow to push.
+3. **Test:** run the workflow by hand with an existing tag to rebuild it, then
+   check that Quay.io starts a build:
+   ```sh
+   gh workflow run track-openshift-release.yaml -f rebuild_tag=4.22.18
+   ```
+   Run it without `rebuild_tag` to check for a new release now instead of
+   waiting for the schedule.
 
 To follow one minor version instead of the newest stable release, change
 `CHANNEL` in the workflow, e.g. `stable-4.22` or `fast-4.22`.
@@ -107,4 +121,4 @@ To follow one minor version instead of the newest stable release, change
 |------|---------|
 | `Containerfile` | Two-stage build: download the signature, serve it with nginx |
 | `.containerignore` | Keeps the build context down to the `Containerfile` |
-| `.github/workflows/track-openshift-release.yaml` | Detects new releases and pushes version tags |
+| `.github/workflows/track-openshift-release.yaml` | Detects new releases, pushes version tags, triggers Quay.io builds |
